@@ -11,7 +11,11 @@ Not for the Definitive Edition.
   - `pc/` and `edit/` folders, also inside wrapper folders (screenshots and readmes are dropped)
   - `sds/` without its `pc/` parent goes under `pc/`
   - bare `.sds` files go where the game keeps the file of that name (`src/sds-paths.ts`);
-    unknown names and side-by-side variants are refused with a message
+    unknown names are refused with a message
+  - archives with several versions of the same files side by side (`1080p/pc/...`, `4K/pc/...`):
+    a dialog asks which one to install
+
+    ![Version choice](assets/variant-dialog.png)
   - ASI plugins and `dinput8.dll` go to `pc/`
 - `.sds` files that several mods replace (`tables.sds`, `ingame.sds`, DLC files) are merged on deploy,
   field by field and resource by resource against the game's own file: two mods changing different
@@ -32,8 +36,6 @@ Not for the Definitive Edition.
   Runtime. It is not bundled: its licence doesn't allow redistribution.
 
   ![Mafia Toolkit offer](assets/toolkit-offer.png)
-
-Not handled yet: variant archives (1080p/4K).
 
 ## Build
 

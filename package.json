@@ -1,6 +1,6 @@
 {
   "name": "vortex-game-extension-mafia2",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "description": "Vortex support for Mafia II (2010, Classic, Steam).",
   "license": "GPL-3.0-or-later",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.4
+- Archives with several versions of the same files side by side (1080p/4K folders and the like):
+  a dialog asks which one to install, instead of refusing the archive or letting the last one win
+
 ## 0.0.3
 - Any .sds that two or more enabled mods replace is merged, not only tables.sds: ingame.sds, DLC files.
   Archives with models or textures can't be merged: one mod's file is used whole, by default the one

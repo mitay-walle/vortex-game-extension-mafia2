@@ -4,13 +4,14 @@ import * as path from 'node:path';
 import * as React from 'react';
 
 import { loadChoices, picksFor, saveChoices } from './choices';
-import { installers } from './installers';
+import { installers, type Instruction } from './installers';
 import { isSds, SdsMerger, sharedSdsFiles, splitStaged, type MergeReport } from './merge-sds';
 import { KNOWN_COLUMNS, parseColumnNames } from './sds/fields';
 import { installToolkit, TOOLKIT_EXE } from './toolkit';
 import { conflictText } from './sds/merge';
 import { ConflictsDialog } from './ui/ConflictsDialog';
 import { ConflictsStore } from './ui/conflicts-store';
+import { keepVariants, variantGroups } from './variants';
 
 const GAME_ID = 'mafia2';
 const STEAM_ID = '50130';
@@ -44,6 +45,27 @@ const vortex = () => require('vortex-api');
 
 const gamePath = (api: VortexApi): string | undefined =>
   vortex().selectors.discoveryByGame(api.getState(), GAME_ID)?.path;
+
+/**
+ * When the archive holds several versions of the same files side by side (`1080p/pc/...`,
+ * `4K/pc/...`), asks which one to install, once per set of versions.
+ */
+async function chooseVariants(api: VortexApi, instructions: Instruction[]): Promise<Instruction[]> {
+  const groups = variantGroups(instructions);
+  const picks = new Map<string, string>();
+  for (const g of groups) {
+    const shown = g.files.slice(0, 3).join(', ') + (g.files.length > 3 ? `, and ${g.files.length - 3} more` : '');
+    const result = await api.showDialog('question', 'Mafia II: choose a version', {
+      text: `This archive has ${g.options.length} versions of the same files${g.parent === '' ? '' : ` in ${g.parent}`} `
+        + `(${shown}). Only one can be installed; check the mod description for what each one is.`,
+      choices: g.options.map((o, i) => ({ id: o, text: o, value: i === 0 })),
+    }, [{ label: 'Cancel' }, { label: 'Install' }]);
+    if (result.action !== 'Install') throw new (vortex().util.UserCanceled)();
+    const picked = Object.entries(result.input ?? {}).find(([, on]) => on === true)?.[0];
+    picks.set(g.parent, picked ?? g.options[0]!);
+  }
+  return groups.length === 0 ? instructions : keepVariants(instructions, groups, picks);
+}
 
 async function findGame(): Promise<string> {
   const found = await vortex().util.GameStoreHelper.findByAppId([STEAM_ID]);
@@ -85,7 +107,7 @@ function main(context: Context): boolean {
       inst.id,
       inst.priority,
       async (files: string[], gameId: string) => ({ supported: isGame(gameId) && inst.test(files), requiredFiles: [] }),
-      async (files: string[]) => ({ instructions: await inst.install(files) }),
+      async (files: string[]) => ({ instructions: await chooseVariants(context.api, await inst.install(files)) }),
     );
   }
 

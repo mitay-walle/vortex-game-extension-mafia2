@@ -33,8 +33,12 @@ describe('installBareSds', () => {
     await expect(install(['CROSSHAIR_DOT_ON.bat', 'tables_dot.sds'])).rejects.toThrow(/tables_dot\.sds/);
   });
 
-  it('refuses side-by-side variants of the same file', async () => {
-    await expect(install(['1080p/tables.sds', '4K/tables.sds'])).rejects.toThrow(/several versions/);
+  it('maps side-by-side variants of the same file to the same place (the player picks one)', async () => {
+    const { instructions } = await install(['1080p/tables.sds', '4K/tables.sds']);
+    expect(instructions.slice(0, 2)).toEqual([
+      { type: 'copy', source: '1080p/tables.sds', destination: 'pc/sds/tables/tables.sds' },
+      { type: 'copy', source: '4K/tables.sds', destination: 'pc/sds/tables/tables.sds' },
+    ]);
   });
 
   it('ignores directory entries', async () => {
