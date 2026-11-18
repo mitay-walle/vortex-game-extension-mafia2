@@ -58,3 +58,12 @@ describe('conflictLines names', () => {
     ]);
   });
 });
+
+describe('a file taken whole', () => {
+  it('says which copies are empty', () => {
+    const c: MergeConflict = { id: 'whole file', mods: ['No Police', 'State Police'], used: 'No Police', picked: true, empty: ['No Police'] };
+    const [line] = conflictLines({}, 'pc/sds/police_char/police_char.sds', [c]);
+    expect(line!.values).toEqual({ 'No Police': 'empty file (0 bytes)', 'State Police': 'use this' });
+    expect(line!.hint).toMatch(/empty one can stop the game/);
+  });
+});

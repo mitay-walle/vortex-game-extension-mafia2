@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { isSds, SdsMerger, sharedSdsFiles, splitStaged, WHOLE_FILE, type MergeReport } from './merge-sds';
+import { emptySdsFiles, isSds, SdsMerger, sharedSdsFiles, splitStaged, WHOLE_FILE, type MergeReport } from './merge-sds';
 import { readSds, writeSds, type SdsArchive } from './sds/sds';
 import { archive, resource, rowsOf } from './sds/test-fixtures';
 
@@ -139,6 +139,39 @@ describe('SdsMerger', () => {
   });
 });
 
+describe('empty files', () => {
+  // nexusmods.com/mafia2/mods/616 (No Police) ships its police archives as 0-byte files
+  it('marks the mods whose copy of a whole file is empty, and an empty result', async () => {
+    const rel = 'pc/sds/police_char/police_char.sds';
+    const a = stage('No Police', Buffer.alloc(0), rel);
+    const b = stage('State Police', writeSds(modelArchive(5)), rel);
+    merger = new SdsMerger(() => staging, r => reports.push(r), () => new Map([[WHOLE_FILE, 'No Police']]));
+    newDeploy(writeSds(modelArchive(0)), rel);
+    await merger.merge(a, mergeDir);
+    await merger.merge(b, mergeDir);
+    expect(reports.at(-1)!.conflicts).toMatchObject([{ id: WHOLE_FILE, used: 'No Police', empty: ['No Police'] }]);
+    expect(reports.at(-1)!.empty).toBe(true);
+  });
+
+  it('does not flag a non-empty result', async () => {
+    const rel = 'pc/sds/police_char/police_char.sds';
+    const a = stage('No Police', Buffer.alloc(0), rel);
+    const b = stage('State Police', writeSds(modelArchive(5)), rel);
+    newDeploy(writeSds(modelArchive(0)), rel);
+    await merger.merge(a, mergeDir);
+    await merger.merge(b, mergeDir);
+    expect(reports.at(-1)!.empty).toBeUndefined();
+  });
+
+  it('lists 0-byte .sds files per mod', () => {
+    stage('No Police', Buffer.alloc(0), 'pc/sds/police_char/m11police.sds');
+    stage('No Police', 'x', 'pc/sds/tables/tables.sds');
+    stage('Other', Buffer.alloc(0), 'readme.txt');
+    expect(emptySdsFiles(['No Police', 'Other'].map(m => path.join(staging, m))))
+      .toEqual([{ mod: 'No Police', file: 'pc/sds/police_char/m11police.sds' }]);
+  });
+});
+
 describe('helpers', () => {
   it('finds .sds files that two or more mods ship', () => {
     stageRows('Mod A', [[1, 1]]);
@@ -149,6 +182,10 @@ describe('helpers', () => {
     stage('Mod D', 'x', 'edit/sdsconfig.bin');
     expect(sharedSdsFiles(['Mod A', 'Mod B', 'Mod C', 'Mod D'].map(m => path.join(staging, m))))
       .toEqual(new Set([TABLES, 'pc/sds/police_char/police_char.sds']));
+    // Mod D's police_char turned off: only Mod C ships it now
+    const skip = (folder: string, rel: string) => path.basename(folder) === 'Mod D' && rel === 'pc/sds/police_char/police_char.sds';
+    expect(sharedSdsFiles(['Mod A', 'Mod B', 'Mod C', 'Mod D'].map(m => path.join(staging, m)), skip))
+      .toEqual(new Set([TABLES]));
   });
 
   it('only looks at .sds under pc/', () => {

@@ -151,10 +151,12 @@ export function conflictLines(
         place: 'Whole file',
         table: '',
         field: '',
-        hint: 'can\'t be merged (models or textures): the game gets one mod\'s file',
+        hint: (c.empty?.length ?? 0) > 0
+          ? 'can\'t be merged (models or textures): the game gets one mod\'s file; an empty one can stop the game from starting'
+          : 'can\'t be merged (models or textures): the game gets one mod\'s file',
         title: `${file}: one mod's file is used whole`,
         vanilla: '',
-        values: Object.fromEntries(c.mods.map(m => [m, 'use this'])),
+        values: Object.fromEntries(c.mods.map(m => [m, c.empty?.includes(m) === true ? 'empty file (0 bytes)' : 'use this'])),
         chosen: rowChoice(choices, file, c)!,
         pick: (ch, mod) => pickRow(ch, file, c, mod),
       }];

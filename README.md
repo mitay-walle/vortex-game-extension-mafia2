@@ -29,6 +29,27 @@ Not for the Definitive Edition.
 
   ![Merge conflicts window](assets/conflicts-window.png)
 
+- **Crash tracking.** While Mafia II is the active game, the extension notices when `mafia2.exe`
+  exits and asks Windows whether it crashed. A run that ends without a crash, after the game wrote
+  its `Saves` folder, is remembered with the enabled mods. When the game crashes, a notification
+  names the mods added or changed since that run, with a button to disable them. If the mods are
+  the same as in a run that worked, it says the crash is probably not caused by a mod. History is
+  kept in `mafia2-crash-history.json` in the staging folder.
+- **Problems column** on the Mods page, per mod:
+  - *crashed since enabled*: the game crashed after the mod was enabled or changed (cleared by the
+    next run that works; hover for the full text)
+  - *N conflicts to resolve* / *N conflicts chosen*, with a **Conflicts** button that opens the
+    Merge conflicts window
+  - *N files off*, and on every mod a **Files** button: a list of the mod's `.sds` files with
+    checkboxes. Unticked files are neither deployed nor merged, so the game gets its own copy or
+    another mod's. To find the file that crashes the game, untick half, run the game, and narrow it
+    down. This uses Vortex's own file overrides, so it survives restarts and shows in collections.
+
+  ![Problems column](assets/problems-column.png)
+- Empty (0-byte) `.sds` files a deploy puts in the game are reported in a notification, and shown
+  as *empty file (0 bytes)* in the Merge conflicts window. Some mods ship them on purpose to remove
+  a model; if the game crashes, Files or the conflicts window can switch them off.
+
 - [Mafia Toolkit](https://github.com/Greavesy1899/MafiaToolkit) is offered when the game is managed
   (also **Install Mafia Toolkit** under ... on the Mods page): it is downloaded from its GitHub
   releases into Vortex's folder, pointed at the game and added to the game's tools. Its list of

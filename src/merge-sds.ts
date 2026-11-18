@@ -14,7 +14,7 @@
 // what we wrote last. Archives whose resources can only be matched by position (models, textures)
 // aren't merged: the last mod's file is used whole, as without merging.
 import { createHash } from 'node:crypto';
-import { promises as fs, readdirSync } from 'node:fs';
+import { promises as fs, readdirSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { mergeSds, NotMergeableError, resourceKeys, type MergeConflict } from './sds/merge';
@@ -26,28 +26,55 @@ const norm = (p: string): string => p.replace(/\\/g, '/').toLowerCase();
 /** Files the merge looks at: .sds under pc/ (main game and DLCs). */
 export const isSds = (relPath: string): boolean => /^pc\/.*\.sds$/.test(norm(relPath));
 
-/** Relative paths (lower case, `/`) of the .sds files that at least two of `modFolders` contain. */
-export function sharedSdsFiles(modFolders: string[]): Set<string> {
+/** Calls `found` with the path (`/`, as in the folder) of every .sds file under `folder`. */
+export function walkSds(folder: string, found: (rel: string, abs: string) => void, rel = ''): void {
+  let entries;
+  try {
+    entries = readdirSync(rel === '' ? folder : path.join(folder, rel), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const r = rel === '' ? e.name : `${rel}/${e.name}`;
+    if (e.isDirectory()) walkSds(folder, found, r);
+    else if (e.name.toLowerCase().endsWith('.sds')) found(r, path.join(folder, r));
+  }
+}
+
+/** A file of a mod the player turned off (not deployed); `rel` lower case, `/`. */
+export type Skip = (folder: string, rel: string) => boolean;
+
+/**
+ * Relative paths (lower case, `/`) of the .sds files that at least two of `modFolders` contain,
+ * leaving out files the player turned off.
+ */
+export function sharedSdsFiles(modFolders: string[], skip: Skip = () => false): Set<string> {
   const seen = new Map<string, number>();
   for (const folder of modFolders) {
     const files = new Set<string>();
-    const walk = (dir: string, rel: string) => {
-      let entries;
-      try {
-        entries = readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const e of entries) {
-        const r = rel === '' ? e.name : `${rel}/${e.name}`;
-        if (e.isDirectory()) walk(path.join(dir, e.name), r);
-        else if (isSds(r)) files.add(norm(r));
-      }
-    };
-    walk(folder, '');
+    walkSds(folder, r => { if (isSds(r) && !skip(folder, norm(r))) files.add(norm(r)); });
     for (const f of files) seen.set(f, (seen.get(f) ?? 0) + 1);
   }
   return new Set([...seen].filter(([, n]) => n > 1).map(([f]) => f));
+}
+
+/**
+ * Empty (0-byte) .sds files in `modFolders`, as `{ mod: folder name, file: path in the mod }`. The
+ * game can't load an empty archive; some mods ship them on purpose to blank a model out.
+ */
+export function emptySdsFiles(modFolders: string[], skip: Skip = () => false): { mod: string; file: string }[] {
+  const found: { mod: string; file: string }[] = [];
+  for (const folder of modFolders) {
+    walkSds(folder, (rel, abs) => {
+      if (skip(folder, norm(rel))) return;
+      try {
+        if (statSync(abs).size === 0) found.push({ mod: path.basename(folder), file: rel });
+      } catch {
+        // gone since the listing
+      }
+    });
+  }
+  return found;
 }
 
 /** Splits an absolute staged file path into its mod folder name and the path inside the mod. */
@@ -68,6 +95,8 @@ export interface MergeReport {
   warnings: string[];
   /** why the file wasn't merged; one mod's file was used whole (the `WHOLE_FILE` conflict says whose) */
   notMerged?: string;
+  /** the file the game gets is empty (0 bytes) */
+  empty?: boolean;
 }
 
 /** Conflict id of a file that can't be merged: the choice is whose file the game gets. */
@@ -120,7 +149,11 @@ export class SdsMerger {
       const pick = this.picksFor(where.rel).get(WHOLE_FILE);
       const at = pick === undefined ? -1 : labels.lastIndexOf(pick);
       const used = at >= 0 ? state.sources[at]! : modFile;
-      if (labels.length > 1) conflicts = [{ id: WHOLE_FILE, mods: labels, used: label(used), picked: at >= 0 }];
+      const sizes = await Promise.all(state.sources.map(async f => (await fs.stat(f)).size));
+      const empty = labels.filter((_, i) => sizes[i] === 0);
+      if (labels.length > 1) {
+        conflicts = [{ id: WHOLE_FILE, mods: labels, used: label(used), picked: at >= 0, ...(empty.length > 0 && { empty }) }];
+      }
       return fs.readFile(used);
     };
     if (state.vanilla === undefined) {
@@ -155,6 +188,7 @@ export class SdsMerger {
       conflicts,
       warnings,
       ...(notMerged !== undefined && { notMerged }),
+      ...(merged.length === 0 && { empty: true }),
     });
   }
 }

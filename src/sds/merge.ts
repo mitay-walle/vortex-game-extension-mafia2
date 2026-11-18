@@ -115,6 +115,8 @@ export interface MergeConflict {
   perField?: boolean;
   /** for table rows: the row's own name, e.g. "Thompson 1928" */
   name?: string;
+  /** for a file taken whole: the mods whose copy is an empty (0-byte) file */
+  empty?: string[];
 }
 
 export const conflictText = (c: MergeConflict): string =>

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.5
+- Crash tracking: when `mafia2.exe` crashes (Windows Application Error log), a notification names
+  the mods added or changed since the last run that worked, with a button to disable them
+- Problems column on the Mods page: crashed since enabled, merge conflicts with a Conflicts button,
+  and files turned off
+- Files button: choose which of a mod's .sds files are used; unticked files are neither deployed nor
+  merged (Vortex file overrides, now also respected by the .sds merge)
+- Empty (0-byte) .sds files the deploy puts in the game are reported, and marked in the conflicts window
+
 ## 0.0.4
 - Archives with several versions of the same files side by side (1080p/4K folders and the like):
   a dialog asks which one to install, instead of refusing the archive or letting the last one win

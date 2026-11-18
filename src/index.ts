@@ -1,11 +1,15 @@
 // Vortex extension for Mafia II (2010, Classic, Steam). Not for the Definitive Edition.
 import { readFileSync } from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as React from 'react';
 
 import { loadChoices, picksFor, saveChoices } from './choices';
 import { installers, type Instruction } from './installers';
-import { isSds, SdsMerger, sharedSdsFiles, splitStaged, type MergeReport } from './merge-sds';
+import { emptySdsFiles, isSds, SdsMerger, sharedSdsFiles, splitStaged, walkSds, WHOLE_FILE, type MergeReport, type Skip } from './merge-sds';
+import { offFiles, offText, withOffFiles } from './file-choice';
+import { crashMessage, crashNote, crashShort, fingerprint, loadHistory, recordRun, saveHistory, writtenSince, type CrashHistory, type Snapshot } from './crashes';
+import { watchGame } from './game-watch';
 import { KNOWN_COLUMNS, parseColumnNames } from './sds/fields';
 import { installToolkit, TOOLKIT_EXE } from './toolkit';
 import { conflictText } from './sds/merge';
@@ -36,6 +40,7 @@ type Context = {
   registerMerge: (test: any, merge: (filePath: string, mergeDir: string) => Promise<void>, modType: string) => void;
   once: (fn: () => void) => void;
   registerDialog: (id: string, component: any, props?: () => any) => void;
+  registerTableAttribute: (table: string, attribute: any) => void;
   registerAction: (group: string, position: number, icon: string, options: any, title: string, action: () => void, condition?: () => boolean) => void;
 };
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -114,15 +119,38 @@ function main(context: Context): boolean {
   // .sds files that two or more enabled root-type mods ship; recomputed at the start of each deploy
   let shared = new Set<string>();
   const stagingPath = () => vortex().selectors.installPathForGame(context.api.getState(), GAME_ID) as string;
-  const enabledModFolders = (): string[] => {
+  /** where a mod of this type is deployed to: the game folder, or its pc folder */
+  const deployRoot = (type?: string): string => {
+    const root = gamePath(context.api) ?? '';
+    return type === 'exe-folder' ? path.join(root, 'pc') : root;
+  };
+  const enabledMods = (type = 'root'): ModInfo[] => {
     const state = context.api.getState();
     const profileId = vortex().selectors.lastActiveProfileForGame(state, GAME_ID);
     const modState = state.persistent.profiles?.[profileId]?.modState ?? {};
     const mods = state.persistent.mods?.[GAME_ID] ?? {};
-    return Object.values(mods as Record<string, { id: string; type?: string; installationPath?: string }>)
-      .filter(mod => (mod.type ?? '') === 'root' && mod.installationPath !== undefined && modState[mod.id]?.enabled)
-      .map(mod => path.join(stagingPath(), mod.installationPath!));
+    return Object.values(mods as Record<string, ModInfo>)
+      .filter(mod => (mod.type ?? '') === type && mod.installationPath !== undefined && modState[mod.id]?.enabled);
   };
+  const enabledModFolders = (type = 'root'): string[] =>
+    enabledMods(type).map(mod => path.join(stagingPath(), mod.installationPath!));
+  /** the files the player turned off in these mods (Problems column, Files) */
+  const skipFor = (mods: ModInfo[]): Skip => {
+    const off = new Map(mods.map(mod => [path.join(stagingPath(), mod.installationPath!), offFiles(mod.fileOverrides, deployRoot(mod.type))]));
+    return (folder, rel) => off.get(folder)?.has(rel) ?? false;
+  };
+  /**
+   * Empty .sds files the game gets: from a single mod, or the merge's output (a file several mods
+   * ship is the merge's to decide). `pc/...` paths.
+   */
+  const deployedEmptySds = (merged: MergeReport[]): EmptyFile[] => [
+    ...emptySdsFiles(enabledModFolders('root'), skipFor(enabledMods('root'))),
+    ...emptySdsFiles(enabledModFolders('exe-folder'), skipFor(enabledMods('exe-folder'))).map(e => ({ ...e, file: `pc/${e.file}` })),
+  ]
+    .filter(e => !shared.has(e.file.toLowerCase()))
+    .concat(merged.filter(r => r.empty === true).map(r => ({
+      mod: r.conflicts.find(c => c.id === WHOLE_FILE)?.used ?? r.mods[r.mods.length - 1]!, file: r.file,
+    })));
 
   const reports = new Map<string, MergeReport>();
   let lastReports: MergeReport[] = [];
@@ -135,11 +163,14 @@ function main(context: Context): boolean {
   context.registerMerge(
     (game: { id: string }, discovery: { path?: string }) => {
       if (game.id !== GAME_ID || discovery?.path === undefined) return undefined;
-      shared = sharedSdsFiles(enabledModFolders());
+      // Vortex's merge doesn't read file overrides: files turned off stay out of the merge here
+      const skip = skipFor(enabledMods());
+      shared = sharedSdsFiles(enabledModFolders(), skip);
       return {
         filter: (filePath: string) => {
           const where = splitStaged(stagingPath(), filePath);
           if (where === undefined || !isSds(where.rel) || !shared.has(where.rel.toLowerCase())) return false;
+          if (skip(path.join(stagingPath(), where.mod), where.rel.toLowerCase())) return false;
           current = where.rel;
           return true;
         },
@@ -149,6 +180,87 @@ function main(context: Context): boolean {
     (filePath, mergeDir) => merger.merge(filePath, mergeDir),
     'root',
   );
+
+  // crash tracking: each game run is recorded with the enabled mods; a crash is pinned on the mods
+  // that changed since the last run that didn't crash
+  let history: CrashHistory | undefined;
+  const crashHistory = (): CrashHistory => (history ??= loadHistory(stagingPath()));
+  const profileId = (): string => vortex().selectors.lastActiveProfileForGame(context.api.getState(), GAME_ID);
+  const enabledSnapshot = (): Snapshot => {
+    const state = context.api.getState();
+    const modState = state.persistent.profiles?.[profileId()]?.modState ?? {};
+    const mods = state.persistent.mods?.[GAME_ID] ?? {};
+    return Object.fromEntries(Object.values(mods as Record<string, { id: string; installationPath?: string }>)
+      .filter(mod => mod.installationPath !== undefined && modState[mod.id]?.enabled)
+      .map(mod => [mod.id, fingerprint(path.join(stagingPath(), mod.installationPath!))]));
+  };
+
+  // Files: which of a mod's .sds files are deployed (and merged); the others are Vortex file overrides
+  const modName = (mod: ModInfo) => shortName(String(vortex().util.renderModName?.(mod) ?? mod.attributes?.name ?? mod.id));
+  const chooseFiles = async (mod: ModInfo) => {
+    if (mod.installationPath === undefined) return;
+    const files: string[] = [];
+    walkSds(path.join(stagingPath(), mod.installationPath), rel => files.push(rel));
+    const title = `Mafia II: files of ${modName(mod)}`;
+    if (files.length === 0) {
+      await context.api.showDialog('info', title, { text: 'This mod has no .sds files.' }, [{ label: 'Close' }]);
+      return;
+    }
+    const off = offFiles(mod.fileOverrides, deployRoot(mod.type));
+    const result = await context.api.showDialog('question', title, {
+      text: 'Unticked files aren\'t deployed or merged: the game gets its own copy, or another mod\'s. '
+        + 'To find a file that crashes the game, untick half, run the game, and narrow it down.',
+      checkboxes: files.sort().map(f => ({ id: f, text: f, value: !off.has(f.toLowerCase()) })),
+    }, [{ label: 'Cancel' }, { label: 'Apply' }]);
+    if (result.action !== 'Apply') return;
+    const nowOff = files.filter(f => result.input?.[f] === false);
+    context.api.store.dispatch(vortex().actions.setFileOverride(GAME_ID, mod.id, withOffFiles(mod.fileOverrides, deployRoot(mod.type), nowOff)));
+    context.api.events.emit('deploy-mods', () => undefined);
+  };
+  const offCount = (mod: ModInfo) => offFiles(mod.fileOverrides, deployRoot(mod.type)).size;
+  /** the last deploy's merge conflicts the mod takes part in; `open`: decided by mod order, not by the player */
+  const conflictCount = (mod: ModInfo) => {
+    const mine = lastReports.flatMap(r => r.conflicts).filter(c => mod.installationPath !== undefined && c.mods.includes(mod.installationPath));
+    return { total: mine.length, open: mine.filter(c => !c.picked).length };
+  };
+  const conflictText = ({ total, open }: { total: number; open: number }) =>
+    open > 0 ? `${open} ${open === 1 ? 'conflict' : 'conflicts'} to resolve` : total > 0 ? `${total} ${total === 1 ? 'conflict' : 'conflicts'} chosen` : '';
+  const problemsShort = (mod: ModInfo) =>
+    [crashShort(crashHistory(), mod.id), conflictText(conflictCount(mod)), offText(offCount(mod))].filter(Boolean).join(', ');
+
+  // Mods page column: problems seen with the mod (the game crashed after it was enabled), files
+  // turned off, and the Files button
+  let refreshProblemsColumn = () => undefined as void;
+  context.registerTableAttribute('mods', {
+    id: 'mafia2-problems',
+    name: 'Problems',
+    description: 'The game crashed after the mod was enabled or changed; Files: which of its .sds files are used',
+    icon: 'warning',
+    placement: 'table',
+    isToggleable: true,
+    isDefaultVisible: true,
+    isSortable: true,
+    edit: {},
+    condition: () => vortex().selectors.activeGameId(context.api.getState()) === GAME_ID,
+    externalData: (onChanged: () => void) => { refreshProblemsColumn = onChanged; },
+    calc: (mod: ModInfo) => problemsShort(mod),
+    customRenderer: (mod: ModInfo | ModInfo[]) => {
+      if (Array.isArray(mod)) return null;
+      const conflicts = conflictCount(mod);
+      return React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' } },
+        React.createElement('span', { title: crashNote(crashHistory(), mod.id) || undefined, style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, problemsShort(mod)),
+        conflicts.total > 0 ? React.createElement('button', {
+          className: 'btn btn-default btn-xs',
+          title: 'Open the merge conflicts window',
+          onClick: (e: { stopPropagation: () => void }) => { e.stopPropagation(); openConflicts(); },
+        }, 'Conflicts') : null,
+        React.createElement('button', {
+          className: 'btn btn-default btn-xs',
+          title: 'Choose which of the mod\'s .sds files are used',
+          onClick: (e: { stopPropagation: () => void }) => { e.stopPropagation(); void chooseFiles(mod); },
+        }, 'Files'));
+    },
+  });
 
   // the conflicts window
   const store = new ConflictsStore();
@@ -229,9 +341,49 @@ function main(context: Context): boolean {
     context.api.events.on('did-deploy', () => {
       lastReports = [...reports.values()];
       reports.clear();
-      notify(context.api, lastReports, openConflicts);
+      refreshProblemsColumn();
+      const names = modNames();
+      notify(context.api, lastReports, deployedEmptySds(lastReports).map(e => ({ ...e, mod: names[e.mod] ?? e.mod })), openConflicts);
     });
+
+    let snapshot: Snapshot = {};
+    watchGame(
+      () => vortex().selectors.activeGameId(context.api.getState()) === GAME_ID,
+      () => { snapshot = enabledSnapshot(); },
+      end => {
+        const staging = stagingPath();
+        // the game writes its Saves folder while it runs and when it exits normally
+        const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
+        const saves = path.join(localAppData, '2K Games', 'Mafia II', 'Saves');
+        history = recordRun(crashHistory(), snapshot, end.crashed, end.endedAt, writtenSince(saves, end.startedAt));
+        void saveHistory(staging, history);
+        refreshProblemsColumn();
+        if (end.crashed) notifyCrash(history);
+      },
+    );
   });
+
+  const notifyCrash = (h: CrashHistory) => {
+    const c = h.crash!;
+    const mods = context.api.getState().persistent.mods?.[GAME_ID] ?? {};
+    const names = Object.fromEntries(Object.values(mods as Record<string, { id: string; attributes?: Record<string, unknown> }>)
+      .map(mod => [mod.id, shortName(String(vortex().util.renderModName?.(mod) ?? mod.attributes?.name ?? mod.id))]));
+    const disable = !c.noGood && c.suspects.length > 0;
+    context.api.sendNotification({
+      id: 'mafia2-crash',
+      type: 'error',
+      title: 'Mafia II crashed',
+      message: crashMessage(h, names),
+      actions: disable ? [{
+        title: c.suspects.length === 1 ? 'Disable it' : 'Disable them',
+        action: (dismiss: () => void) => {
+          dismiss();
+          for (const id of c.suspects) context.api.store.dispatch(vortex().actions.setModEnabled(profileId(), id, false));
+          context.api.events.emit('deploy-mods', () => undefined);
+        },
+      }] : [],
+    });
+  };
 
   return true;
 }
@@ -242,7 +394,41 @@ export function shortName(name: string): string {
   return n.length > 24 ? `${n.slice(0, 23)}…` : n;
 }
 
-function notify(api: VortexApi, reports: MergeReport[], resolve: () => void): void {
+interface ModInfo {
+  id: string;
+  type?: string;
+  installationPath?: string;
+  fileOverrides?: string[];
+  attributes?: Record<string, unknown>;
+}
+
+interface EmptyFile {
+  mod: string;
+  file: string;
+}
+
+function notify(api: VortexApi, reports: MergeReport[], empty: EmptyFile[], resolve: () => void): void {
+  const emptyId = 'mafia2-empty-sds';
+  api.dismissNotification(emptyId);
+  if (empty.length > 0) {
+    const list = empty.map(e => `${e.file} (${e.mod})`);
+    api.sendNotification({
+      id: emptyId,
+      type: 'warning',
+      title: `Mafia II: ${empty.length} empty .sds ${empty.length === 1 ? 'file' : 'files'} deployed`,
+      message: list.slice(0, 2).join(', ') + (list.length > 2 ? `, and ${list.length - 2} more` : ''),
+      actions: [{
+        title: 'More',
+        action: () => api.showDialog('info', 'Mafia II: empty .sds files', {
+          text: 'These archives are 0 bytes. Some mods ship them on purpose to remove a model, but the game '
+            + 'can fail to start or crash where it loads one. If it does, disable the mod, or pick another '
+            + 'mod\'s copy in Merge conflicts when several mods ship the file.',
+          message: list.join('\n'),
+        }, [{ label: 'Close' }]),
+      }],
+    });
+  }
+
   const id = 'mafia2-sds-merge';
   api.dismissNotification(id);
   if (reports.length === 0) return;
