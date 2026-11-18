@@ -36,7 +36,67 @@ describe('mergeSds', () => {
       { label: 'b', archive: archive([[1, 12], [2, 20], [3, 30]]) },
     ]);
     expect(rowsOf(out)[0]).toEqual([1, 12]);
-    expect(conflicts).toEqual(['table /tables/weapons.tbl id 1: changed by a and b, using b']);
+    expect(conflicts).toEqual([{
+      id: 'table /tables/weapons.tbl id 1', mods: ['a', 'b'], used: 'b', picked: false, perField: true,
+      fields: [{
+        id: 'table /tables/weapons.tbl id 1 #1', column: '#1 bbbbbbbb', type: 3, vanilla: '10',
+        values: { a: '11', b: '12' }, mods: ['a', 'b'], used: 'b', picked: false,
+      }],
+    }]);
+  });
+
+  it('merges a row field by field: different fields from different mods, no conflict', () => {
+    const base = archive([[1, 10, 100], [2, 20, 200]]);
+    const { archive: out, conflicts } = mergeSds(base, [
+      { label: 'a', archive: archive([[1, 11, 100], [2, 20, 200]]) },
+      { label: 'b', archive: archive([[1, 10, 111], [2, 20, 200]]) },
+    ]);
+    expect(rowsOf(out)).toEqual([[1, 11, 111], [2, 20, 200]]);
+    expect(conflicts).toEqual([]);
+  });
+
+  it('reports only the contested fields, a field pick beats a row pick', () => {
+    const base = archive([[1, 10, 100, 1000]]);
+    const mods = [
+      { label: 'a', archive: archive([[1, 11, 101, 1000]]) },
+      { label: 'b', archive: archive([[1, 12, 102, 1002]]) },
+    ];
+    const row = 'table /tables/weapons.tbl id 1';
+    const auto = mergeSds(base, mods);
+    expect(rowsOf(auto.archive)).toEqual([[1, 12, 102, 1002]]);
+    expect(auto.conflicts[0]!.fields!.map(f => f.id)).toEqual([`${row} #1`, `${row} #2`]);
+    const picked = mergeSds(base, mods, new Map([[row, 'a'], [`${row} #2`, 'b']]));
+    expect(rowsOf(picked.archive)).toEqual([[1, 11, 102, 1002]]);
+    expect(picked.conflicts[0]!.fields!.map(f => [f.used, f.picked])).toEqual([['a', true], ['b', true]]);
+  });
+
+  it('uses the mod the user picked for a conflict, other rows still merge', () => {
+    const mods = [
+      { label: 'a', archive: archive([[1, 11], [2, 22], [3, 30]]) },
+      { label: 'b', archive: archive([[1, 12], [2, 20], [3, 33]]) },
+    ];
+    const { archive: out, conflicts } = mergeSds(vanilla, mods, new Map([['table /tables/weapons.tbl id 1', 'a']]));
+    expect(rowsOf(out)).toEqual([[1, 11], [2, 22], [3, 33]]);
+    expect(conflicts).toMatchObject([{ id: 'table /tables/weapons.tbl id 1', mods: ['a', 'b'], used: 'a', picked: true }]);
+  });
+
+  it('ignores a pick of a mod that no longer changes that row', () => {
+    const mods = [
+      { label: 'a', archive: archive([[1, 11], [2, 20], [3, 30]]) },
+      { label: 'b', archive: archive([[1, 12], [2, 20], [3, 30]]) },
+    ];
+    const { archive: out } = mergeSds(vanilla, mods, new Map([['table /tables/weapons.tbl id 1', 'gone']]));
+    expect(rowsOf(out)[0]).toEqual([1, 12]);
+  });
+
+  it('picks work for whole resources too', () => {
+    const mods = [
+      { label: 'a', archive: archive([[1, 10], [2, 20], [3, 30]], 'value\x01two') },
+      { label: 'b', archive: archive([[1, 10], [2, 20], [3, 30]], 'value\x01three') },
+    ];
+    const { archive: out, conflicts } = mergeSds(vanilla, mods, new Map([['XML /config/x', 'a']]));
+    expect(out.resources[1]!.data.toString('latin1')).toContain('two');
+    expect(conflicts.map(c => [c.id, c.used])).toEqual([['XML /config/x', 'a']]);
   });
 
   it('appends new rows and grows the RAM figures by the size change', () => {

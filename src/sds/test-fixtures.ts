@@ -5,13 +5,20 @@ const u16 = (v: number) => { const b = Buffer.alloc(2); b.writeUInt16LE(v); retu
 const u32 = (v: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b; };
 const str32 = (s: string) => Buffer.concat([u32(s.length), Buffer.from(s, 'latin1')]);
 
-/** One table, two u32 columns (id, value), rows given as [id, value]. */
-function tableResource(name: string, rows: [number, number][]): Buffer {
+/** One table of u32 columns (id, value, ...), rows given as arrays; column i is named by hash "aaaaaaaa", "bbbbbbbb", ... */
+function tableResource(name: string, rows: number[][]): Buffer {
+  const width = rows[0]?.length ?? 2;
+  const columns = Array.from({ length: width }, (_, i) => {
+    const b = Buffer.alloc(8);
+    b.writeUInt32LE(parseInt((10 + i).toString(16).repeat(8), 16));
+    b[4] = 3;
+    return b;
+  });
   return Buffer.concat([
     u32(1),
-    Buffer.alloc(8), u16(name.length), Buffer.from(name, 'latin1'), u16(2), u32(0), u32(0),
-    u32(8), u32(rows.length), ...rows.map(([id, v]) => Buffer.concat([u32(id), u32(v)])),
-    Buffer.from('aaaaaaaa0300000bbbbbbbbb03000000', 'hex'),
+    Buffer.alloc(8), u16(name.length), Buffer.from(name, 'latin1'), u16(width), u32(0), u32(0),
+    u32(width * 4), u32(rows.length), ...rows.map(r => Buffer.concat(r.map(u32))),
+    ...columns,
   ]);
 }
 
@@ -22,7 +29,7 @@ export function resource(typeId: number, typeName: string, data: Buffer): SdsRes
   return { typeId, typeName, version: 1, slotRamRequired: data.length, slotVramRequired: 0, otherRamRequired: 0, otherVramRequired: 0, data };
 }
 
-export function archive(rows: [number, number][], xmlBody = 'value\x01one'): SdsArchive {
+export function archive(rows: number[][], xmlBody = 'value\x01one'): SdsArchive {
   const resources = [
     resource(0, 'Table', tableResource('/tables/weapons.tbl', rows)),
     resource(1, 'XML', xmlResource('/config/x', xmlBody)),
@@ -42,7 +49,8 @@ export const rowsOf = (a: SdsArchive) => {
   const d = a.resources[0]!.data;
   const nameLength = d.readUInt16LE(12);
   const at = 14 + nameLength + 10;
+  const size = d.readUInt32LE(at);
   const count = d.readUInt32LE(at + 4);
-  return Array.from({ length: count }, (_, i) => [d.readUInt32LE(at + 8 + i * 8), d.readUInt32LE(at + 12 + i * 8)]);
+  return Array.from({ length: count }, (_, i) =>
+    Array.from({ length: size / 4 }, (_, c) => d.readUInt32LE(at + 8 + i * size + c * 4)));
 };
-

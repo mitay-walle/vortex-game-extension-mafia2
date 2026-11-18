@@ -14,7 +14,7 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  external: ['vortex-api', 'electron'],
+  external: ['vortex-api', 'electron', 'react'],
   sourcemap: true,
 });
 

@@ -199,7 +199,7 @@ export function resourceNames(archive: SdsArchive): string[] {
 }
 
 /**
- * A resource's name, read from its own data where the type stores one (MemFile, XML), so it doesn't
+ * A resource's name, read from its own data where the type stores one (MemFile, XML, Script), so it doesn't
  * depend on the trailing XML, which modding tools don't always keep in step with the resources.
  */
 export function resourceName(resource: SdsResource, fallback: string): string {
@@ -211,6 +211,11 @@ export function resourceName(resource: SdsResource, fallback: string): string {
     return [d.subarray(at + 4, at + 4 + n).toString('latin1').replace(/\0+$/, ''), at + 4 + n];
   };
   if (resource.typeName === 'MemFile') return str(0)?.[0] ?? fallback;
+  if (resource.typeName === 'Script' && d.length >= 2) {
+    // u16 length, folder path (e.g. /scripts/common/Police/)
+    const n = d.readUInt16LE(0);
+    if (n > 0 && 2 + n <= d.length) return d.subarray(2, 2 + n).toString('latin1');
+  }
   if (resource.typeName === 'XML') {
     const tag = str(0);
     if (tag !== undefined) return str(tag[1] + 1)?.[0] ?? fallback; // tag, u8 flag, name
